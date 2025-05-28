@@ -33,7 +33,7 @@ class RecommendationSwiper:
         self.user_profile_vector = None
         
         # Simple recommendation parameters
-        self.exploration_ratio = 0.4  # 30% exploration, 70% exploitation
+        self.exploration_ratio = 0.4  # 40% exploration, 60% exploitation
         self.liked_items_embeddings = []  # Store embeddings of liked items
         self.disliked_items_embeddings = []  # Store embeddings of disliked items
         
