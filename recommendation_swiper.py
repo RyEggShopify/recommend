@@ -1,4 +1,3 @@
-# recommendation_swiper.py
 import chromadb
 from sentence_transformers import SentenceTransformer
 import numpy as np
@@ -6,6 +5,7 @@ import json
 from typing import List, Dict
 from dataclasses import dataclass
 import os
+import random
 
 @dataclass
 class SwipeResult:
@@ -51,29 +51,40 @@ class RecommendationSwiper:
         else:
             raise ValueError("items_data must be either a list or pandas DataFrame")
         
-        print(f"Adding {len(items_df)} items to the database...")
+        # Get existing items from the database
+        existing_items = self.items_collection.get()
+        existing_ids = set(existing_items['ids']) if existing_items['ids'] else set()
+        
+        # Filter out items that already exist
+        new_items_df = items_df[~items_df['product_id'].astype(str).isin(existing_ids)]
+        
+        if len(new_items_df) == 0:
+            print("All items already exist in the database.")
+            return
+            
+        print(f"Adding {len(new_items_df)} new items to the database...")
         
         # Clean the data before adding to ChromaDB
         # Convert None values to appropriate defaults
-        for col in items_df.columns:
-            if items_df[col].dtype == 'object':  # String columns
-                items_df[col] = items_df[col].fillna('')
-            elif items_df[col].dtype in ['int64', 'float64']:  # Numeric columns
-                items_df[col] = items_df[col].fillna(0)
-            elif items_df[col].dtype == 'bool':  # Boolean columns
-                items_df[col] = items_df[col].fillna(False)
+        for col in new_items_df.columns:
+            if new_items_df[col].dtype == 'object':  # String columns
+                new_items_df[col] = new_items_df[col].fillna('')
+            elif new_items_df[col].dtype in ['int64', 'float64']:  # Numeric columns
+                new_items_df[col] = new_items_df[col].fillna(0)
+            elif new_items_df[col].dtype == 'bool':  # Boolean columns
+                new_items_df[col] = new_items_df[col].fillna(False)
         
         # Convert datetime columns to strings
-        for col in items_df.columns:
-            if items_df[col].dtype == 'datetime64[ns, UTC]' or 'datetime' in str(items_df[col].dtype):
-                items_df[col] = items_df[col].astype(str)
+        for col in new_items_df.columns:
+            if new_items_df[col].dtype == 'datetime64[ns, UTC]' or 'datetime' in str(new_items_df[col].dtype):
+                new_items_df[col] = new_items_df[col].astype(str)
         
         # Prepare data for ChromaDB
         documents = []
         metadatas = []
         ids = []
         
-        for idx, row in items_df.iterrows():
+        for _, row in new_items_df.iterrows():
             # Create document text (you might want to customize this)
             doc_text = f"Product: {row.get('title', '')} Description: {row.get('body_html', '')}"
             documents.append(doc_text)
@@ -104,27 +115,37 @@ class RecommendationSwiper:
             ids=ids
         )
         
-        print(f"Successfully added {len(items_df)} items to the database.")
+        print(f"Successfully added {len(new_items_df)} new items to the database.")
     
     def get_recommendations(self, n_results: int = 10, exclude_seen: bool = True) -> List[Dict]:
         """Get recommendations based on current user preferences"""
         if self.user_profile_vector is not None:
+            print("Using user profile for recommendations")
             # Use user profile for similarity search
             results = self.items_collection.query(
                 query_embeddings=[self.user_profile_vector.tolist()],
                 n_results=n_results * 2  # Get more to filter out seen items
             )
         else:
+            print("Cold start: using random sampling")
             # Cold start: get random items
             all_items = self.items_collection.get()
             if not all_items['ids']:
                 return []
             
-            # Simulate random selection for cold start
-            results = self.items_collection.query(
-                query_embeddings=[self.model.encode("popular trending recommendation").tolist()],
-                n_results=n_results * 2
+            # Get random sample of items for cold start
+            random_ids = random.sample(all_items['ids'], min(n_results * 2, len(all_items['ids'])))
+            results = self.items_collection.get(
+                ids=random_ids,
+                include=['metadatas']
             )
+            
+            # Restructure results to match query format
+            results = {
+                'ids': [results['ids']],
+                'metadatas': [results['metadatas']],
+                'distances': [[0] * len(results['ids'])]  # No meaningful distance for random sampling
+            }
         
         recommendations = []
         seen_ids = {swipe.item_id for swipe in self.swipe_history}
@@ -159,6 +180,8 @@ class RecommendationSwiper:
         )
         self.swipe_history.append(swipe_result)
         
+        print(f"Recorded swipe: {action} for item {item_id}")
+        
         # Update user profile based on the swipe
         self._update_user_profile()
         
@@ -168,6 +191,8 @@ class RecommendationSwiper:
         if not self.swipe_history:
             return
         
+        print(f"Updating user profile based on {len(self.swipe_history)} swipes")
+        
         liked_embeddings = []
         disliked_embeddings = []
         
@@ -176,29 +201,46 @@ class RecommendationSwiper:
             try:
                 # Get item embedding from database
                 result = self.items_collection.get(ids=[swipe.item_id], include=['embeddings'])
-                if result['embeddings']:
+                
+                # Check if embeddings exist and are not empty
+                if (result.get('embeddings') is not None and 
+                    len(result['embeddings']) > 0 and 
+                    result['embeddings'][0] is not None):
+                    
                     embedding = np.array(result['embeddings'][0])
                     
                     if swipe.action == 'like':
                         liked_embeddings.append(embedding)
+                        print(f"Added liked embedding for item {swipe.item_id}")
                     else:
                         disliked_embeddings.append(embedding)
-            except:
+                        print(f"Added disliked embedding for item {swipe.item_id}")
+                else:
+                    print(f"No embeddings found for item {swipe.item_id}")
+                    
+            except Exception as e:
+                print(f"Error getting embedding for item {swipe.item_id}: {e}")
                 continue
         
         # Calculate user profile vector
         if liked_embeddings:
             liked_centroid = np.mean(liked_embeddings, axis=0)
+            print(f"Calculated liked centroid from {len(liked_embeddings)} items")
             
             if disliked_embeddings:
                 disliked_centroid = np.mean(disliked_embeddings, axis=0)
                 # Move towards liked items and away from disliked items
                 self.user_profile_vector = liked_centroid - 0.3 * disliked_centroid
+                print(f"Updated profile vector considering {len(disliked_embeddings)} disliked items")
             else:
                 self.user_profile_vector = liked_centroid
+                print("Updated profile vector with only liked items")
             
             # Normalize the vector
             self.user_profile_vector = self.user_profile_vector / np.linalg.norm(self.user_profile_vector)
+            print("User profile vector updated and normalized")
+        else:
+            print("No liked embeddings found - user profile not updated")
     
     def get_stats(self) -> Dict:
         """Get user interaction statistics"""
@@ -254,5 +296,3 @@ class RecommendationSwiper:
         # Restore user profile vector
         if session_data["user_profile_vector"]:
             self.user_profile_vector = np.array(session_data["user_profile_vector"])
-        
-    

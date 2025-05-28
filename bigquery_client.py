@@ -17,7 +17,7 @@ class ShopifyBigQueryClient:
             # Use default credentials (from gcloud auth or environment)
             self.client = bigquery.Client(project=project_id)
     
-    def query_products(self, limit=100) -> pd.DataFrame:
+    def query_products(self, limit=5_000) -> pd.DataFrame:
         """Query products from the merchandising dataset"""
         query = f"""
         SELECT *

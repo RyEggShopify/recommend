@@ -15,6 +15,7 @@ class SimpleSwiper:
         """Initialize with data"""
         print("🚀 Loading data...")
         
+        # Check if we have items
         print("📊 Loading from BigQuery...")
         sample_items = self.bigquery_client.query_products()
         print(f"Loaded {len(sample_items)} items from BigQuery")
@@ -104,7 +105,7 @@ class SimpleSwiper:
 
 def main():
     app = SimpleSwiper()
-    # app.run()
+    app.run()
 
 if __name__ == "__main__":
     main()
