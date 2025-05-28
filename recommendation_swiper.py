@@ -3,12 +3,8 @@ import chromadb
 from sentence_transformers import SentenceTransformer
 import numpy as np
 import json
-import uuid
-from typing import List, Dict, Optional
+from typing import List, Dict
 from dataclasses import dataclass
-from rich.console import Console
-from rich.prompt import Prompt
-from rich.panel import Panel
 import os
 
 @dataclass
@@ -20,7 +16,6 @@ class SwipeResult:
 class RecommendationSwiper:
     def __init__(self, db_path: str = "./vector_db"):
         """Initialize the recommendation system"""
-        self.console = Console()
         
         # Initialize ChromaDB
         self.client = chromadb.PersistentClient(path=db_path)
@@ -35,6 +30,7 @@ class RecommendationSwiper:
         # User interaction history
         self.swipe_history: List[SwipeResult] = []
         self.user_profile_vector = None
+    
         
     def _get_or_create_collection(self, name: str):
         """Get or create a ChromaDB collection"""
@@ -43,30 +39,72 @@ class RecommendationSwiper:
         except:
             return self.client.create_collection(name)
     
-    def add_items(self, items: List[Dict[str, str]]):
-        """Add items to the database with their embeddings"""
-        for item in items:
-            item_id = item.get('id', str(uuid.uuid4()))
-            text = f"{item.get('title', '')} {item.get('description', '')} {item.get('tags', '')}"
-            
-            # Generate embedding
-            embedding = self.model.encode(text).tolist()
-            
-            # Store in ChromaDB
-            self.items_collection.add(
-                embeddings=[embedding],
-                documents=[text],
-                metadatas=[{
-                    'id': item_id,
-                    'title': item.get('title', ''),
-                    'description': item.get('description', ''),
-                    'tags': item.get('tags', ''),
-                    'category': item.get('category', '')
-                }],
-                ids=[item_id]
-            )
+    def add_items(self, items_data):
+        """Add items to the vector database"""
+        import pandas as pd
         
-        self.console.print(f"✅ Added {len(items)} items to the database")
+        # Convert to DataFrame if it's not already
+        if isinstance(items_data, list):
+            items_df = pd.DataFrame(items_data)
+        elif isinstance(items_data, pd.DataFrame):
+            items_df = items_data.copy()
+        else:
+            raise ValueError("items_data must be either a list or pandas DataFrame")
+        
+        print(f"Adding {len(items_df)} items to the database...")
+        
+        # Clean the data before adding to ChromaDB
+        # Convert None values to appropriate defaults
+        for col in items_df.columns:
+            if items_df[col].dtype == 'object':  # String columns
+                items_df[col] = items_df[col].fillna('')
+            elif items_df[col].dtype in ['int64', 'float64']:  # Numeric columns
+                items_df[col] = items_df[col].fillna(0)
+            elif items_df[col].dtype == 'bool':  # Boolean columns
+                items_df[col] = items_df[col].fillna(False)
+        
+        # Convert datetime columns to strings
+        for col in items_df.columns:
+            if items_df[col].dtype == 'datetime64[ns, UTC]' or 'datetime' in str(items_df[col].dtype):
+                items_df[col] = items_df[col].astype(str)
+        
+        # Prepare data for ChromaDB
+        documents = []
+        metadatas = []
+        ids = []
+        
+        for idx, row in items_df.iterrows():
+            # Create document text (you might want to customize this)
+            doc_text = f"Product: {row.get('title', '')} Description: {row.get('body_html', '')}"
+            documents.append(doc_text)
+            
+            # Create metadata dictionary, filtering out problematic values
+            metadata = {}
+            for key, value in row.items():
+                if key == 'product_id':  # Use product_id as the ID
+                    continue
+                
+                # Ensure value is not None and is a supported type
+                if value is not None:
+                    if isinstance(value, (str, int, float, bool)):
+                        metadata[key] = value
+                    else:
+                        metadata[key] = str(value)
+                else:
+                    # Set appropriate default for None values
+                    metadata[key] = ""
+            
+            metadatas.append(metadata)
+            ids.append(str(row['product_id']))
+        
+        # Add to ChromaDB
+        self.items_collection.add(
+            documents=documents,
+            metadatas=metadatas,
+            ids=ids
+        )
+        
+        print(f"Successfully added {len(items_df)} items to the database.")
     
     def get_recommendations(self, n_results: int = 10, exclude_seen: bool = True) -> List[Dict]:
         """Get recommendations based on current user preferences"""
@@ -124,7 +162,6 @@ class RecommendationSwiper:
         # Update user profile based on the swipe
         self._update_user_profile()
         
-        self.console.print(f"📱 Swiped {action} on item {item_id}")
     
     def _update_user_profile(self):
         """Update user profile vector based on swipe history"""
@@ -195,12 +232,10 @@ class RecommendationSwiper:
         with open(filename, 'w') as f:
             json.dump(session_data, f, indent=2)
         
-        self.console.print(f"💾 Session saved to {filename}")
     
     def load_session(self, filename: str = "swipe_session.json"):
         """Load a previous session"""
         if not os.path.exists(filename):
-            self.console.print(f"❌ Session file {filename} not found")
             return
         
         with open(filename, 'r') as f:
@@ -220,139 +255,4 @@ class RecommendationSwiper:
         if session_data["user_profile_vector"]:
             self.user_profile_vector = np.array(session_data["user_profile_vector"])
         
-        self.console.print(f"📂 Session loaded from {filename}")
-
-def create_sample_data():
-    """Create sample data for testing"""
-    sample_items = [
-        {
-            "id": "1",
-            "title": "The Great Gatsby",
-            "description": "A classic American novel about the Jazz Age",
-            "tags": "classic literature fiction drama",
-            "category": "books"
-        },
-        {
-            "id": "2",
-            "title": "Inception",
-            "description": "A mind-bending sci-fi thriller about dreams",
-            "tags": "sci-fi thriller action christopher nolan",
-            "category": "movies"
-        },
-        {
-            "id": "3",
-            "title": "The Beatles - Abbey Road",
-            "description": "Iconic album by the legendary British band",
-            "tags": "rock classic 60s beatles music",
-            "category": "music"
-        },
-        {
-            "id": "4",
-            "title": "Machine Learning Course",
-            "description": "Learn the fundamentals of machine learning and AI",
-            "tags": "education technology programming AI",
-            "category": "courses"
-        },
-        {
-            "id": "5",
-            "title": "Mediterranean Pasta Recipe",
-            "description": "Delicious pasta with olives, tomatoes, and herbs",
-            "tags": "cooking italian food recipe healthy",
-            "category": "recipes"
-        },
-        {
-            "id": "6",
-            "title": "Hiking in Yosemite",
-            "description": "Explore the beautiful trails of Yosemite National Park",
-            "tags": "outdoors nature hiking adventure california",
-            "category": "travel"
-        },
-        {
-            "id": "7",
-            "title": "Python Programming Bootcamp",
-            "description": "Comprehensive course for learning Python from scratch",
-            "tags": "programming python coding education technology",
-            "category": "courses"
-        },
-        {
-            "id": "8",
-            "title": "Blade Runner 2049",
-            "description": "Stunning sequel to the sci-fi classic",
-            "tags": "sci-fi cyberpunk future dystopian",
-            "category": "movies"
-        }
-    ]
-    return sample_items
-
-def main():
-    """Main interactive loop"""
-    console = Console()
-    swiper = RecommendationSwiper()
     
-    # Load existing session if available
-    swiper.load_session()
-    
-    # Add sample data if database is empty
-    if len(swiper.items_collection.get()['ids']) == 0:
-        console.print("🚀 Setting up sample data...")
-        sample_items = create_sample_data()
-        swiper.add_items(sample_items)
-    
-    console.print("\n🎉 Welcome to the Recommendation Swiper!")
-    console.print("Commands: 'like', 'dislike', 'skip', 'stats', 'save', 'quit'")
-    
-    while True:
-        # Get recommendations
-        recommendations = swiper.get_recommendations(n_results=1)
-        
-        if not recommendations:
-            console.print("🎊 No more recommendations available!")
-            break
-        
-        current_item = recommendations[0]
-        
-        # Display current item
-        panel_content = f"""
-🏷️  **{current_item['title']}**
-
-📝 {current_item['description']}
-
-🏷️  Tags: {current_item['tags']}
-📂 Category: {current_item['category']}
-        """
-        
-        console.print(Panel(panel_content, title="Current Recommendation", expand=False))
-        
-        # Get user input
-        action = Prompt.ask(
-            "What's your choice?",
-            choices=["like", "dislike", "skip", "stats", "save", "quit"],
-            default="skip"
-        )
-        
-        if action == "quit":
-            break
-        elif action == "save":
-            swiper.save_session()
-            continue
-        elif action == "stats":
-            stats = swiper.get_stats()
-            console.print(Panel(
-                f"Total Swipes: {stats['total_swipes']}\n"
-                f"Likes: {stats['likes']}\n"
-                f"Dislikes: {stats['dislikes']}\n"
-                f"Like Rate: {stats['like_rate']:.1%}",
-                title="📊 Your Stats"
-            ))
-            continue
-        elif action == "skip":
-            continue
-        else:
-            swiper.swipe(current_item['id'], action)
-    
-    # Auto-save on exit
-    swiper.save_session()
-    console.print("👋 Thanks for using the Recommendation Swiper!")
-
-if __name__ == "__main__":
-    main()

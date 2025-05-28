@@ -1,0 +1,35 @@
+{
+  "swipe_history": [
+    {
+      "item_id": "8",
+      "action": "dislike",
+      "timestamp": 1748451413.266349
+    },
+    {
+      "item_id": "604053340183",
+      "action": "dislike",
+      "timestamp": 1748451413.8730838
+    },
+    {
+      "item_id": "1",
+      "action": "dislike",
+      "timestamp": 1748451414.320122
+    },
+    {
+      "item_id": "593990287383",
+      "action": "dislike",
+      "timestamp": 1748451414.656859
+    },
+    {
+      "item_id": "1350632669207",
+      "action": "dislike",
+      "timestamp": 1748451415.00089
+    },
+    {
+      "item_id": "1342263722007",
+      "action": "dislike",
+      "timestamp": 1748451415.6651158
+    }
+  ],
+  "user_profile_vector": null
+}
