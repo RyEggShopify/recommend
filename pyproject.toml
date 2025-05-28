@@ -6,8 +6,12 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "chromadb>=1.0.11",
+    "db-dtypes>=1.4.3",
+    "flask>=3.1.1",
+    "google-cloud-bigquery>=3.33.0",
     "numpy>=2.2.6",
     "pandas>=2.2.3",
     "rich>=14.0.0",
     "sentence-transformers>=4.1.0",
+    "tk>=0.1.0",
 ]
