@@ -33,12 +33,12 @@ class RecommendationSwiper:
         self.user_profile_vector = None
         
         # Simple recommendation parameters
-        self.exploration_ratio = 0.3  # 30% exploration, 70% exploitation
+        self.exploration_ratio = 0.4  # 30% exploration, 70% exploitation
         self.liked_items_embeddings = []  # Store embeddings of liked items
         self.disliked_items_embeddings = []  # Store embeddings of disliked items
         
         # Direction switching parameters
-        self.consecutive_dislike_threshold = 5  # Switch direction after 5 consecutive dislikes
+        self.consecutive_dislike_threshold = 3  # Switch direction after 3 consecutive dislikes
         self.direction_switch_active = False  # Whether we're in direction switch mode
         self.switch_exploration_ratio = 0.8  # Much higher exploration when switching direction
     
