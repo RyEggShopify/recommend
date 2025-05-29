@@ -20,9 +20,23 @@ class ShopifyBigQueryClient:
     def query_products(self, limit=5_000) -> pd.DataFrame | None:
         """Query products from the merchandising dataset"""
         query = f"""
-        SELECT *
-        FROM `shopify-dw.merchandising.products`
-        LIMIT {limit}
+        WITH top_restricted_products AS (
+          SELECT product_id,
+                 gmv_usd_60d
+          FROM shopify-dw.mart_search.global_product_set
+          WHERE is_product_restricted = TRUE
+            AND gmv_usd_60d IS NOT NULL
+          ORDER BY gmv_usd_60d DESC
+          LIMIT {limit}
+        )
+
+        SELECT trp.product_id
+        FROM top_restricted_products AS trp
+        WHERE EXISTS (
+          SELECT 1
+          FROM shopify-ml-production.product_embeddings.nomic_finetune_t29_product_document_embeddings_v1_latest AS pe
+          WHERE pe.product_id = trp.product_id
+        );
         """
 
         try:
