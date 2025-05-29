@@ -6,6 +6,7 @@ from typing import List, Dict
 from dataclasses import dataclass
 import os
 import random
+from collections import defaultdict
 
 @dataclass
 class SwipeResult:
@@ -30,6 +31,16 @@ class RecommendationSwiper:
         # User interaction history
         self.swipe_history: List[SwipeResult] = []
         self.user_profile_vector = None
+        
+        # Simple recommendation parameters
+        self.exploration_ratio = 0.4  # 40% exploration, 60% exploitation
+        self.liked_items_embeddings = []  # Store embeddings of liked items
+        self.disliked_items_embeddings = []  # Store embeddings of disliked items
+        
+        # Direction switching parameters
+        self.consecutive_dislike_threshold = 3  # Switch direction after 3 consecutive dislikes
+        self.direction_switch_active = False  # Whether we're in direction switch mode
+        self.switch_exploration_ratio = 0.8  # Much higher exploration when switching direction
     
         
     def _get_or_create_collection(self, name: str):
@@ -117,57 +128,192 @@ class RecommendationSwiper:
         
         print(f"Successfully added {len(new_items_df)} new items to the database.")
     
+    def _get_item_embedding(self, item_id: str) -> np.ndarray:
+        """Get embedding for a specific item"""
+        try:
+            result = self.items_collection.get(ids=[item_id], include=['embeddings'])
+            embeddings = result.get('embeddings')
+            if embeddings is not None and len(embeddings) > 0:
+                embedding = embeddings[0]
+                # Check if embedding exists and is not empty
+                if embedding is not None and hasattr(embedding, '__len__') and len(embedding) > 0:
+                    return np.array(embedding)
+        except Exception as e:
+            print(f"Error getting embedding for {item_id}: {e}")
+        return None
+    
+    def _calculate_preference_score(self, item_embedding: np.ndarray) -> float:
+        """Calculate how much user would like this item based on history"""
+        if item_embedding is None:
+            return 0.5  # Neutral score for items without embeddings
+        
+        like_score = 0.0
+        dislike_score = 0.0
+        
+        # Calculate similarity to liked items
+        if self.liked_items_embeddings:
+            like_similarities = []
+            for liked_emb in self.liked_items_embeddings:
+                similarity = np.dot(item_embedding, liked_emb) / (
+                    np.linalg.norm(item_embedding) * np.linalg.norm(liked_emb))
+                like_similarities.append(max(0, similarity))
+            like_score = np.mean(like_similarities) if like_similarities else 0
+        
+        # Calculate similarity to disliked items (penalty)
+        if self.disliked_items_embeddings:
+            dislike_similarities = []
+            for disliked_emb in self.disliked_items_embeddings:
+                similarity = np.dot(item_embedding, disliked_emb) / (
+                    np.linalg.norm(item_embedding) * np.linalg.norm(disliked_emb))
+                dislike_similarities.append(max(0, similarity))
+            dislike_score = np.mean(dislike_similarities) if dislike_similarities else 0
+        
+        # Combine scores: boost likes, penalize similarity to dislikes
+        final_score = like_score - (dislike_score * 0.5)
+        return max(0.0, min(1.0, final_score))  # Clamp between 0 and 1
+    
+    def _check_consecutive_dislikes(self) -> int:
+        """Count consecutive dislikes from the end of swipe history"""
+        if not self.swipe_history:
+            return 0
+        
+        consecutive_dislikes = 0
+        for swipe in reversed(self.swipe_history):
+            if swipe.action == 'dislike':
+                consecutive_dislikes += 1
+            else:
+                break
+        
+        return consecutive_dislikes
+    
+    def _should_switch_direction(self) -> bool:
+        """Check if we should switch direction due to consecutive dislikes"""
+        consecutive_dislikes = self._check_consecutive_dislikes()
+        
+        # Check if the last action was a like (to deactivate direction switch)
+        if self.swipe_history and self.swipe_history[-1].action == 'like':
+            if self.direction_switch_active:
+                print("✅ Direction switch deactivated - found something you like!")
+                self.direction_switch_active = False
+            return False
+        
+        # Activate direction switch if we hit the threshold
+        if consecutive_dislikes >= self.consecutive_dislike_threshold:
+            if not self.direction_switch_active:
+                print(f"🔄 DIRECTION SWITCH ACTIVATED! {consecutive_dislikes} consecutive dislikes detected")
+                self.direction_switch_active = True
+            return True
+        
+        # Deactivate if consecutive dislikes drop below threshold
+        if self.direction_switch_active and consecutive_dislikes < self.consecutive_dislike_threshold:
+            print(f"✅ Direction switch deactivated - consecutive dislikes dropped to {consecutive_dislikes}")
+            self.direction_switch_active = False
+        
+        return self.direction_switch_active
+    
+    def _get_anti_preference_score(self, item_embedding: np.ndarray) -> float:
+        """Calculate score that's OPPOSITE to user preferences - for direction switching"""
+        if item_embedding is None:
+            return 0.5
+        
+        # Start with neutral score
+        anti_score = 0.5
+        
+        # AVOID similarity to liked items (opposite of normal behavior)
+        if self.liked_items_embeddings:
+            like_similarities = []
+            for liked_emb in self.liked_items_embeddings:
+                similarity = np.dot(item_embedding, liked_emb) / (
+                    np.linalg.norm(item_embedding) * np.linalg.norm(liked_emb))
+                like_similarities.append(max(0, similarity))
+            avg_like_similarity = np.mean(like_similarities)
+            # PENALIZE similarity to likes (opposite of normal)
+            anti_score -= avg_like_similarity * 0.5
+        
+        # PREFER similarity to disliked items (find different areas)
+        if self.disliked_items_embeddings:
+            dislike_similarities = []
+            for disliked_emb in self.disliked_items_embeddings:
+                similarity = np.dot(item_embedding, disliked_emb) / (
+                    np.linalg.norm(item_embedding) * np.linalg.norm(disliked_emb))
+                dislike_similarities.append(max(0, similarity))
+            avg_dislike_similarity = np.mean(dislike_similarities)
+            # AVOID areas similar to dislikes too (explore completely new areas)
+            anti_score -= avg_dislike_similarity * 0.3
+        
+        return max(0.0, min(1.0, anti_score))
+    
     def get_recommendations(self, n_results: int = 10, exclude_seen: bool = True) -> List[Dict]:
-        """Get recommendations based on current user preferences"""
-        if self.user_profile_vector is not None:
-            print("Using user profile for recommendations")
-            # Use user profile for similarity search
-            results = self.items_collection.query(
-                query_embeddings=[self.user_profile_vector.tolist()],
-                n_results=n_results * 2  # Get more to filter out seen items
-            )
-        else:
-            print("Cold start: using random sampling")
-            # Cold start: get random items
-            all_items = self.items_collection.get()
-            if not all_items['ids']:
-                return []
-            
-            # Get random sample of items for cold start
-            random_ids = random.sample(all_items['ids'], min(n_results * 2, len(all_items['ids'])))
-            results = self.items_collection.get(
-                ids=random_ids,
-                include=['metadatas']
-            )
-            
-            # Restructure results to match query format
-            results = {
-                'ids': [results['ids']],
-                'metadatas': [results['metadatas']],
-                'distances': [[0] * len(results['ids'])]  # No meaningful distance for random sampling
-            }
+        """Simple, effective recommendations with direction switching for consecutive dislikes"""
         
-        recommendations = []
+        # Get all available items
+        all_items = self.items_collection.get(include=['metadatas'])
+        if not all_items['ids']:
+            return []
+        
         seen_ids = {swipe.item_id for swipe in self.swipe_history}
+        candidates = []
         
-        for i, item_id in enumerate(results['ids'][0]):
+        # Check if we should switch direction
+        direction_switch = self._should_switch_direction()
+        consecutive_dislikes = self._check_consecutive_dislikes()
+        
+        print(f"Recommending from {len(all_items['ids'])} total items")
+        print(f"User has liked {len(self.liked_items_embeddings)} items, disliked {len(self.disliked_items_embeddings)} items")
+        if direction_switch:
+            print(f"🔄 DIRECTION SWITCH MODE: Exploring completely new areas (consecutive dislikes: {consecutive_dislikes})")
+        
+        # Score all unseen items
+        for i, item_id in enumerate(all_items['ids']):
             if exclude_seen and item_id in seen_ids:
                 continue
-                
-            if len(recommendations) >= n_results:
-                break
-                
-            metadata = results['metadatas'][0][i]
-            recommendations.append({
+            
+            # Get item embedding for preference calculation
+            item_embedding = self._get_item_embedding(item_id)
+            
+            # Calculate preference score based on current mode
+            if direction_switch:
+                # Direction switch mode: explore opposite directions
+                preference_score = self._get_anti_preference_score(item_embedding)
+                exploration_ratio = self.switch_exploration_ratio  # Much higher exploration
+                recommendation_type = "direction_switch"
+            else:
+                # Normal mode: use regular preferences
+                preference_score = self._calculate_preference_score(item_embedding)
+                exploration_ratio = self.exploration_ratio
+                recommendation_type = "learned" if (self.liked_items_embeddings or self.disliked_items_embeddings) else "cold_start"
+            
+            # Add some randomness for exploration
+            random_score = random.random()
+            
+            # Combine scores based on mode
+            if recommendation_type != "cold_start":
+                final_score = (1 - exploration_ratio) * preference_score + exploration_ratio * random_score
+            else:
+                # Cold start: pure random
+                final_score = random_score
+            
+            metadata = all_items['metadatas'][i]
+            candidates.append({
                 'id': item_id,
                 'title': metadata.get('title', ''),
                 'description': metadata.get('description', ''),
                 'tags': metadata.get('tags', ''),
                 'category': metadata.get('category', ''),
-                'similarity_score': results['distances'][0][i] if results['distances'] else 0
+                'preference_score': preference_score,
+                'random_score': random_score,
+                'final_score': final_score,
+                'recommendation_type': recommendation_type,
+                'consecutive_dislikes': consecutive_dislikes,
+                'exploration_ratio': exploration_ratio
             })
         
-        return recommendations
+        # Sort by final score and return top results
+        candidates.sort(key=lambda x: x['final_score'], reverse=True)
+        top_candidates = candidates[:n_results]
+        
+        print(f"Returning {len(top_candidates)} recommendations ({top_candidates[0]['recommendation_type'] if top_candidates else 'none'})")
+        return top_candidates
     
     def swipe(self, item_id: str, action: str):
         """Record a swipe action and update user preferences"""
@@ -180,67 +326,20 @@ class RecommendationSwiper:
         )
         self.swipe_history.append(swipe_result)
         
+        # Get item embedding and add to appropriate collection
+        item_embedding = self._get_item_embedding(item_id)
+        if item_embedding is not None:
+            if action == 'like':
+                self.liked_items_embeddings.append(item_embedding)
+                print(f"Added item {item_id} to liked embeddings (total: {len(self.liked_items_embeddings)})")
+            else:  # dislike
+                self.disliked_items_embeddings.append(item_embedding)
+                print(f"Added item {item_id} to disliked embeddings (total: {len(self.disliked_items_embeddings)})")
+        else:
+            print(f"Warning: Could not get embedding for item {item_id}")
+        
         print(f"Recorded swipe: {action} for item {item_id}")
         
-        # Update user profile based on the swipe
-        self._update_user_profile()
-        
-    
-    def _update_user_profile(self):
-        """Update user profile vector based on swipe history"""
-        if not self.swipe_history:
-            return
-        
-        print(f"Updating user profile based on {len(self.swipe_history)} swipes")
-        
-        liked_embeddings = []
-        disliked_embeddings = []
-        
-        # Get embeddings for liked and disliked items
-        for swipe in self.swipe_history[-20:]:  # Consider recent 20 swipes
-            try:
-                # Get item embedding from database
-                result = self.items_collection.get(ids=[swipe.item_id], include=['embeddings'])
-                
-                # Check if embeddings exist and are not empty
-                if (result.get('embeddings') is not None and 
-                    len(result['embeddings']) > 0 and 
-                    result['embeddings'][0] is not None):
-                    
-                    embedding = np.array(result['embeddings'][0])
-                    
-                    if swipe.action == 'like':
-                        liked_embeddings.append(embedding)
-                        print(f"Added liked embedding for item {swipe.item_id}")
-                    else:
-                        disliked_embeddings.append(embedding)
-                        print(f"Added disliked embedding for item {swipe.item_id}")
-                else:
-                    print(f"No embeddings found for item {swipe.item_id}")
-                    
-            except Exception as e:
-                print(f"Error getting embedding for item {swipe.item_id}: {e}")
-                continue
-        
-        # Calculate user profile vector
-        if liked_embeddings:
-            liked_centroid = np.mean(liked_embeddings, axis=0)
-            print(f"Calculated liked centroid from {len(liked_embeddings)} items")
-            
-            if disliked_embeddings:
-                disliked_centroid = np.mean(disliked_embeddings, axis=0)
-                # Move towards liked items and away from disliked items
-                self.user_profile_vector = liked_centroid - 0.3 * disliked_centroid
-                print(f"Updated profile vector considering {len(disliked_embeddings)} disliked items")
-            else:
-                self.user_profile_vector = liked_centroid
-                print("Updated profile vector with only liked items")
-            
-            # Normalize the vector
-            self.user_profile_vector = self.user_profile_vector / np.linalg.norm(self.user_profile_vector)
-            print("User profile vector updated and normalized")
-        else:
-            print("No liked embeddings found - user profile not updated")
     
     def get_stats(self) -> Dict:
         """Get user interaction statistics"""
@@ -268,7 +367,12 @@ class RecommendationSwiper:
                 }
                 for swipe in self.swipe_history
             ],
-            "user_profile_vector": self.user_profile_vector.tolist() if self.user_profile_vector is not None else None
+            "liked_items_embeddings": [emb.tolist() for emb in self.liked_items_embeddings],
+            "disliked_items_embeddings": [emb.tolist() for emb in self.disliked_items_embeddings],
+            "exploration_ratio": self.exploration_ratio,
+            "consecutive_dislike_threshold": self.consecutive_dislike_threshold,
+            "direction_switch_active": self.direction_switch_active,
+            "switch_exploration_ratio": self.switch_exploration_ratio
         }
         
         with open(filename, 'w') as f:
@@ -293,6 +397,59 @@ class RecommendationSwiper:
             for swipe in session_data["swipe_history"]
         ]
         
-        # Restore user profile vector
-        if session_data["user_profile_vector"]:
-            self.user_profile_vector = np.array(session_data["user_profile_vector"])
+        # Restore embedding collections
+        if "liked_items_embeddings" in session_data:
+            self.liked_items_embeddings = [np.array(emb) for emb in session_data["liked_items_embeddings"]]
+        
+        if "disliked_items_embeddings" in session_data:
+            self.disliked_items_embeddings = [np.array(emb) for emb in session_data["disliked_items_embeddings"]]
+        
+        # Restore exploration ratio
+        if "exploration_ratio" in session_data:
+            self.exploration_ratio = session_data["exploration_ratio"]
+        
+        # Restore direction switch parameters
+        if "consecutive_dislike_threshold" in session_data:
+            self.consecutive_dislike_threshold = session_data["consecutive_dislike_threshold"]
+        
+        if "direction_switch_active" in session_data:
+            self.direction_switch_active = session_data["direction_switch_active"]
+        
+        if "switch_exploration_ratio" in session_data:
+            self.switch_exploration_ratio = session_data["switch_exploration_ratio"]
+        
+        print(f"Loaded session: {len(self.swipe_history)} swipes, {len(self.liked_items_embeddings)} likes, {len(self.disliked_items_embeddings)} dislikes")
+        
+        # Check if direction switch should be active
+        consecutive_dislikes = self._check_consecutive_dislikes()
+        if consecutive_dislikes >= self.consecutive_dislike_threshold:
+            print(f"📍 Session loaded in direction switch mode ({consecutive_dislikes} consecutive dislikes)")
+    
+    def set_exploration_ratio(self, ratio: float):
+        """Set the exploration ratio (0.0 = pure exploitation, 1.0 = pure exploration)"""
+        if not 0.0 <= ratio <= 1.0:
+            raise ValueError("Exploration ratio must be between 0.0 and 1.0")
+        self.exploration_ratio = ratio
+        print(f"Exploration ratio set to {ratio}")
+    
+    def set_consecutive_dislike_threshold(self, threshold: int):
+        """Set the threshold for consecutive dislikes that triggers direction switch"""
+        if threshold < 2:
+            raise ValueError("Consecutive dislike threshold must be at least 2")
+        self.consecutive_dislike_threshold = threshold
+        print(f"Consecutive dislike threshold set to {threshold}")
+    
+    def get_recommendation_stats(self) -> Dict:
+        """Get statistics about the recommendation system"""
+        consecutive_dislikes = self._check_consecutive_dislikes()
+        return {
+            "total_swipes": len(self.swipe_history),
+            "liked_items": len(self.liked_items_embeddings),
+            "disliked_items": len(self.disliked_items_embeddings),
+            "exploration_ratio": self.exploration_ratio,
+            "consecutive_dislikes": consecutive_dislikes,
+            "consecutive_dislike_threshold": self.consecutive_dislike_threshold,
+            "direction_switch_active": self.direction_switch_active,
+            "switch_exploration_ratio": self.switch_exploration_ratio,
+            "learning_status": "direction_switch" if self.direction_switch_active else ("learned" if (self.liked_items_embeddings or self.disliked_items_embeddings) else "cold_start")
+        }
