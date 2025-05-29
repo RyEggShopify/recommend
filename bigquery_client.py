@@ -16,13 +16,25 @@ class ShopifyBigQueryClient:
         else:
             # Use default credentials (from gcloud auth or environment)
             self.client = bigquery.Client(project=project_id)
-    
-    def query_products(self, limit=5_000) -> pd.DataFrame:
-        """Query products from the merchandising dataset"""
+
+    def query_products(self, limit=5_000) -> pd.DataFrame | None:
+        """Query restricted products with GMV data from the global product set"""
         query = f"""
-        SELECT *
-        FROM `shopify-dw.merchandising.products`
+        WITH top_restricted_products AS (         
+        SELECT product_id,
+                gmv_usd_60d,
+                category,
+                title,
+                description,
+        FROM `shopify-dw.mart_search.global_product_set`
+        WHERE is_product_restricted = TRUE
+            AND gmv_usd_60d IS NOT NULL
+            AND gmv_usd_60d > 4000
         LIMIT {limit}
+        )
+        SELECT 
+        *
+        FROM top_restricted_products
         """
         
         try:

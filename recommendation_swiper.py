@@ -66,8 +66,8 @@ class RecommendationSwiper:
         existing_items = self.items_collection.get()
         existing_ids = set(existing_items['ids']) if existing_items['ids'] else set()
         
-        # Filter out items that already exist
-        new_items_df = items_df[~items_df['product_id'].astype(str).isin(existing_ids)]
+        # Filter out items that already exist and create a proper copy
+        new_items_df = items_df[~items_df['product_id'].astype(str).isin(existing_ids)].copy()
         
         if len(new_items_df) == 0:
             print("All items already exist in the database.")
@@ -76,19 +76,19 @@ class RecommendationSwiper:
         print(f"Adding {len(new_items_df)} new items to the database...")
         
         # Clean the data before adding to ChromaDB
-        # Convert None values to appropriate defaults
+        # Convert None values to appropriate defaults using .loc
         for col in new_items_df.columns:
             if new_items_df[col].dtype == 'object':  # String columns
-                new_items_df[col] = new_items_df[col].fillna('')
+                new_items_df.loc[:, col] = new_items_df[col].fillna('')
             elif new_items_df[col].dtype in ['int64', 'float64']:  # Numeric columns
-                new_items_df[col] = new_items_df[col].fillna(0)
+                new_items_df.loc[:, col] = new_items_df[col].fillna(0)
             elif new_items_df[col].dtype == 'bool':  # Boolean columns
-                new_items_df[col] = new_items_df[col].fillna(False)
+                new_items_df.loc[:, col] = new_items_df[col].fillna(False)
         
-        # Convert datetime columns to strings
+        # Convert datetime columns to strings using .loc
         for col in new_items_df.columns:
             if new_items_df[col].dtype == 'datetime64[ns, UTC]' or 'datetime' in str(new_items_df[col].dtype):
-                new_items_df[col] = new_items_df[col].astype(str)
+                new_items_df.loc[:, col] = new_items_df[col].astype(str)
         
         # Prepare data for ChromaDB
         documents = []
@@ -97,7 +97,7 @@ class RecommendationSwiper:
         
         for _, row in new_items_df.iterrows():
             # Create document text (you might want to customize this)
-            doc_text = f"Product: {row.get('title', '')} Description: {row.get('body_html', '')}"
+            doc_text = f"Product: {row.get('title', '')} Description: {row.get('description', '')}"
             documents.append(doc_text)
             
             # Create metadata dictionary, filtering out problematic values
