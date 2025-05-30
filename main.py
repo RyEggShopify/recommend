@@ -21,9 +21,6 @@ class StatsResponse(BaseModel):
 
 class RecommendationResponse(BaseModel):
     id: str
-    title: str
-    description: str | None = None
-    # Add other fields as needed
 
 class SwipeResponse(BaseModel):
     success: bool
