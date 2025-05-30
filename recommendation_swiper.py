@@ -34,6 +34,7 @@ class RecommendationSwiper:
         # User interaction history
         self.swipe_history: List[SwipeResult] = []
         self.user_profile_vector = None
+        self.current_recommendations: List[Dict] = []  # Store current recommendations
 
         # Advanced recommendation parameters
         self.exploration_ratio = 0.4  # 40% exploration, 60% exploitation
@@ -385,6 +386,10 @@ class RecommendationSwiper:
 
         if top_candidates:
             print(f"Recommended {len(top_candidates)} items ({top_candidates[0]['recommendation_type']})")
+
+        # Store current recommendations
+        self.current_recommendations = top_candidates
+        
         return top_candidates
 
     def swipe(self, item_id: str, action: str):
@@ -424,6 +429,17 @@ class RecommendationSwiper:
 
     def save_session(self, filename: str = "swipe_session.json"):
         """Save the current session"""
+        # Format current recommendations to include essential information
+        formatted_recommendations = []
+        for item in self.current_recommendations:
+            formatted_recommendations.append({
+                'id': item['id'],
+                'title': item['title'],
+                'description': item.get('description', ''),
+                'recommendation_type': item.get('recommendation_type', 'unknown'),
+                'final_score': item.get('final_score', 0.0)
+            })
+
         session_data = {
             "swipe_history": [
                 {
@@ -438,7 +454,8 @@ class RecommendationSwiper:
             "exploration_ratio": self.exploration_ratio,
             "consecutive_dislike_threshold": self.consecutive_dislike_threshold,
             "direction_switch_active": self.direction_switch_active,
-            "switch_exploration_ratio": self.switch_exploration_ratio
+            "switch_exploration_ratio": self.switch_exploration_ratio,
+            "current_recommendations": formatted_recommendations  # Save formatted recommendations
         }
 
         with open(filename, 'w') as f:
@@ -483,6 +500,10 @@ class RecommendationSwiper:
 
         if "switch_exploration_ratio" in session_data:
             self.switch_exploration_ratio = session_data["switch_exploration_ratio"]
+
+        # Restore current recommendations
+        if "current_recommendations" in session_data:
+            self.current_recommendations = session_data["current_recommendations"]
 
         # Check if direction switch should be active
         consecutive_dislikes = self._check_consecutive_dislikes()
