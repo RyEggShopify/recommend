@@ -31,5 +31,10 @@
       "timestamp": 1748451415.6651158
     }
   ],
-  "user_profile_vector": null
+  "liked_items_embeddings": [],
+  "disliked_items_embeddings": [],
+  "exploration_ratio": 0.4,
+  "consecutive_dislike_threshold": 3,
+  "direction_switch_active": true,
+  "switch_exploration_ratio": 0.8
 }

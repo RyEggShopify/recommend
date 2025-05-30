@@ -11,3 +11,6 @@ wheels/
 
 # Vector DB
 vector_db
+
+# Data
+data.json

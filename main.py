@@ -5,7 +5,9 @@ from typing import List
 from contextlib import asynccontextmanager
 import uvicorn
 from recommendation_swiper import RecommendationSwiper
-from bigquery_client import ShopifyBigQueryClient
+import os
+import ast
+import json
 
 # Pydantic models
 class SwipeRequest(BaseModel):
@@ -32,28 +34,64 @@ class SwipeResponse(BaseModel):
 # Global application state
 class AppState:
     def __init__(self):
-        self.swiper = None
+        self.swiper: RecommendationSwiper | None = None
         self.bigquery_client = None
         self.initialized = False
+    def parse_json(self, json_path="data.json", target_dim=768):
+        if not os.path.exists(json_path):
+            raise FileNotFoundError(f"{json_path} not found")
+
+        items = []
+        skipped_items = 0
+
+        with open(json_path, "r") as file:
+            for idx, line in enumerate(file, start=1):
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                obj = json.loads(line)
+                vector = obj.get("product_search_document_embedding")
+
+                # embedding stored as string
+                if isinstance(vector, str):
+                    vector = ast.literal_eval(vector)
+
+                # Check embedding dimensions explicitly
+                if len(vector) != target_dim:
+                    skipped_items += 1
+                    print(f"⚠️ Skipped line {idx}: Embedding dimension is {len(vector)}, expected {target_dim}")
+                    continue
+
+                items.append({
+                    "id": str(obj["product_id"]),
+                    "embedding": vector,
+                    "gmv_usd_60d": float(obj["gmv_usd_60d"])
+                })
+
+        if skipped_items:
+            print(f"⚠️ Skipped {skipped_items} items due to mismatch dimensions.")
+
+        if not self.swiper:
+            raise Exception("Swiper is not initialized")
+
+        return items
+
 
     def initialize(self):
         if not self.initialized:
             print("🚀 Initializing recommendation swiper...")
             self.swiper = RecommendationSwiper()
-            self.bigquery_client = ShopifyBigQueryClient()
 
-            # Load data from BigQuery
-            sample_items = self.bigquery_client.query_products()
-            if sample_items is None:
-                raise Exception("couldn't find any sample items")
-            print(f"🥱 Loaded {len(sample_items)} items from BigQuery")
-            sample_items = sample_items.to_dict(orient='records')
-            self.swiper.add_items(sample_items)
+            data = self.parse_json()
+            self.swiper.add_items(data)
 
             # Load existing session
             self.swiper.load_session()
             self.initialized = True
             print("✅ Initialization complete!")
+
 
 state = AppState()
 
