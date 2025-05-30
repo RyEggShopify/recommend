@@ -25,7 +25,7 @@ class RecommendationResponse(BaseModel):
 class SwipeResponse(BaseModel):
     success: bool
     message: str
-    item_title: str
+    # item_title: str
     action: str
 
 # Global application state
@@ -137,7 +137,8 @@ async def get_recommendations(n_results: int = 3):
 
         # Convert to response format
         formatted_recommendations = []
-        for item in recommendations:
+        print("\n📋 Sending Recommendations:")
+        for idx, item in enumerate(recommendations, 1):
             # Clean up HTML tags from description
             description = item.get('description', '')
             if description:
@@ -145,15 +146,28 @@ async def get_recommendations(n_results: int = 3):
                 if len(description) > 200:
                     description = description[:200] + "..."
 
-            formatted_recommendations.append({
+            print("item", item)
+            formatted_item = {
                 'id': str(item['id']),
-                'title': item['title'],
-                'description': description
-            })
+                # 'title': item['title'],
+                'description': description,
+                'recommendation_type': item.get('recommendation_type', 'unknown'),
+                'final_score': item.get('final_score', 0.0)
+            }
+            formatted_recommendations.append(formatted_item)
+
+            # Log each recommendation
+            print(f"\n  {idx}. Recommendation:")
+            print(f"     ID: {formatted_item['id']}")
+            # print(f"     Title: {formatted_item['title']}")
+            print(f"     Description: {formatted_item['description']}")
+            print(f"     Type: {formatted_item['recommendation_type']}")
+            print(f"     Score: {formatted_item['final_score']:.2f}")
 
         return formatted_recommendations
 
     except Exception as e:
+        print(f"\n❌ Error getting recommendations: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error getting recommendations: {str(e)}")
 
 @app.post("/swipe", response_model=SwipeResponse)
@@ -166,33 +180,43 @@ async def swipe_item(swipe_request: SwipeRequest):
         raise HTTPException(status_code=400, detail="Action must be 'like' or 'dislike'")
 
     try:
-        # Get current recommendations to find the item
-        current_recommendations = state.swiper.get_recommendations(n_results=10)
+        # Log the incoming swipe request
+        print("\n📱 Received Swipe Request:")
+        print(f"  Item ID: {swipe_request.item_id}")
+        print(f"  Action: {swipe_request.action}")
+        
+        # Check against stored recommendations
+        current_recommendations = state.swiper.current_recommendations
+        if not current_recommendations:
+            # If no stored recommendations, fetch new ones
+            current_recommendations = state.swiper.get_recommendations(n_results=10)
 
-        # Find the item being swiped
-        item_title = None
-        for item in current_recommendations:
-            if str(item['id']) == swipe_request.item_id:
-                item_title = item['title']
-                break
-
-        if not item_title:
-            raise HTTPException(status_code=404, detail="Item not found in current recommendations")
+        # Log current recommendations
+        print("\n📋 Current Recommendations:")
+        for idx, item in enumerate(current_recommendations, 1):
+            print(f"  {idx}. ID: {item['id']}")
 
         # Perform the swipe
         state.swiper.swipe(swipe_request.item_id, swipe_request.action)
 
+        # Remove the swiped item from current recommendations
+        state.swiper.current_recommendations = [
+            item for item in current_recommendations 
+            if str(item['id']) != swipe_request.item_id
+        ]
+
         action_emoji = "✅" if swipe_request.action == 'like' else "❌"
-        message = f"{action_emoji} {swipe_request.action.upper()}: {item_title}"
+        message = f"{action_emoji} {swipe_request.action.upper()}: {swipe_request.item_id}"
 
         return SwipeResponse(
             success=True,
             message=message,
-            item_title=item_title,
+            # item_title=item_title,
             action=swipe_request.action
         )
 
     except Exception as e:
+        print(f"\n❌ Error processing swipe: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing swipe: {str(e)}")
 
 @app.get("/stats", response_model=StatsResponse)
